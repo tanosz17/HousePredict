@@ -19,18 +19,35 @@ st.set_page_config(page_title="Prediksi Harga Rumah", layout="wide")
 # Cache data untuk mempercepat loading
 @st.cache_data
 def load_data(path):
-    """Memuat dan membersihkan data dari file XLSX."""
+    """
+    Memuat dan membersihkan data dari file CSV dengan separator titik koma.
+    """
     try:
-        df = pd.read_excel(path)
-        # Preprocessing dasar seperti di notebook
+        # PERUBAHAN 1: Menggunakan pd.read_csv dengan separator ';'
+        df = pd.read_csv(path, sep=';')
+        
+        # Preprocessing dasar
         df.drop(['Id'], axis=1, inplace=True, errors='ignore')
-        df['SalePrice'] = df['SalePrice'].fillna(df['SalePrice'].mean())
-        # Menghapus baris dengan nilai null di kolom fitur penting
+        
+        # PERUBAHAN 2: Hapus baris di mana target (SalePrice) tidak ada.
+        # Ini sangat penting karena file CSV Anda memiliki data tanpa harga jual.
+        # Data tanpa target tidak bisa digunakan untuk melatih model.
+        df.dropna(subset=['SalePrice'], inplace=True)
+        
+        # PERUBAHAN 3: Pastikan tipe data SalePrice adalah numerik setelah dropna.
+        df['SalePrice'] = pd.to_numeric(df['SalePrice'], errors='coerce')
+
+        # Menghapus baris dengan nilai null di kolom fitur penting (dari data yang tersisa)
         df.dropna(subset=['MSZoning', 'LotConfig', 'BldgType', 'Exterior1st', 'BsmtFinSF2', 'TotalBsmtSF'], inplace=True)
+        
         return df
     except FileNotFoundError:
-        st.error(f"File tidak ditemukan di path: {path}. Pastikan file 'HousePricePrediction.xlsx' ada di folder yang sama.")
+        st.error(f"File tidak ditemukan di path: {path}. Pastikan file '{path}' ada di folder yang sama.")
         return None
+    except Exception as e:
+        st.error(f"Terjadi error saat memuat data: {e}")
+        return None
+
 
 # Cache resource untuk tidak melatih ulang model setiap kali ada interaksi
 @st.cache_resource
@@ -65,7 +82,6 @@ def train_model(df):
 def get_user_input(df):
     """
     Menampilkan widget di sidebar dan mengumpulkan input dari pengguna.
-    Fungsi ini dipanggil setiap kali skrip dijalankan ulang.
     """
     st.sidebar.header("Masukkan Fitur Rumah")
     
@@ -81,10 +97,10 @@ def get_user_input(df):
     input_data['TotalBsmtSF'] = st.sidebar.slider('Total Luas Basement (TotalBsmtSF)', float(df['TotalBsmtSF'].min()), float(df['TotalBsmtSF'].max()), float(df['TotalBsmtSF'].mean()))
 
     # Input untuk fitur kategorikal
-    input_data['MSZoning'] = st.sidebar.selectbox('Klasifikasi Zona (MSZoning)', df['MSZoning'].unique())
-    input_data['LotConfig'] = st.sidebar.selectbox('Konfigurasi Tanah (LotConfig)', df['LotConfig'].unique())
-    input_data['BldgType'] = st.sidebar.selectbox('Tipe Rumah (BldgType)', df['BldgType'].unique())
-    input_data['Exterior1st'] = st.sidebar.selectbox('Eksterior (Exterior1st)', df['Exterior1st'].unique())
+    input_data['MSZoning'] = st.sidebar.selectbox('Klasifikasi Zona (MSZoning)', sorted(df['MSZoning'].unique()))
+    input_data['LotConfig'] = st.sidebar.selectbox('Konfigurasi Tanah (LotConfig)', sorted(df['LotConfig'].unique()))
+    input_data['BldgType'] = st.sidebar.selectbox('Tipe Rumah (BldgType)', sorted(df['BldgType'].unique()))
+    input_data['Exterior1st'] = st.sidebar.selectbox('Eksterior (Exterior1st)', sorted(df['Exterior1st'].unique()))
     
     return pd.DataFrame([input_data])
 
@@ -92,23 +108,15 @@ def process_and_predict(user_input_df, model, oh_encoder, feature_names):
     """
     Memproses input pengguna agar sesuai format model dan melakukan prediksi.
     """
-    # 1. Pisahkan kolom kategorikal dan numerik dari input
     user_cat_cols = user_input_df.select_dtypes(include=['object']).columns
     user_num_cols = user_input_df.select_dtypes(include=['number']).columns
 
-    # 2. Encode kolom kategorikal pengguna menggunakan encoder yang sudah di-fit
     user_cat_encoded = oh_encoder.transform(user_input_df[user_cat_cols])
     user_cat_encoded_df = pd.DataFrame(user_cat_encoded, columns=oh_encoder.get_feature_names_out(user_cat_cols))
     
-    # 3. Gabungkan kembali dengan kolom numerik
-    # Gunakan reset_index untuk memastikan alignment yang benar saat concat
     processed_input = pd.concat([user_input_df[user_num_cols].reset_index(drop=True), user_cat_encoded_df.reset_index(drop=True)], axis=1)
-
-    # 4. Pastikan urutan kolom dan jumlah kolom sama persis dengan saat training
-    # Ini sangat penting! `fill_value=0` akan menangani kolom yang tidak ada di input.
     processed_input = processed_input.reindex(columns=feature_names, fill_value=0)
     
-    # 5. Lakukan prediksi
     prediction = model.predict(processed_input)
     
     return prediction[0]
@@ -118,32 +126,23 @@ def process_and_predict(user_input_df, model, oh_encoder, feature_names):
 st.title("🏡 Aplikasi Prediksi Harga Jual Rumah")
 st.write("Aplikasi ini memprediksi harga jual rumah berdasarkan fitur-fitur yang Anda masukkan di sidebar.")
 
-# Muat data (menggunakan cache)
-data_path = "HousePricePrediction.xlsx"
+# PERUBAHAN 4: Mengubah path ke file CSV yang baru
+data_path = "Copy of HousePricePrediction(1).csv"
 df = load_data(data_path)
 
-# Hanya jalankan aplikasi jika data berhasil dimuat
 if df is not None:
-    # Latih model (menggunakan cache)
     model, oh_encoder, feature_names = train_model(df)
-
-    # Dapatkan input dari pengguna melalui sidebar
     user_input_df = get_user_input(df)
 
-    # Tampilkan detail input yang dipilih pengguna
     st.subheader("Detail Input Pengguna:")
     st.write(user_input_df)
 
-    # Proses input dan lakukan prediksi
     predicted_price = process_and_predict(user_input_df, model, oh_encoder, feature_names)
 
-    # Tampilkan hasil prediksi dengan format yang lebih baik
     st.subheader("Hasil Prediksi Harga Jual")
     st.metric(label="Prediksi Harga", value=f"${predicted_price:,.2f}")
     st.info("Catatan: Harga prediksi akan diperbarui setiap kali Anda mengubah nilai di sidebar dan melepaskan interaksi (misalnya, melepas slider).")
 
-
-    # --- Expander untuk Analisis Data ---
     with st.expander("Tampilkan Analisis Data Eksplorasi"):
         st.subheader("Korelasi Antar Fitur Numerik")
         fig, ax = plt.subplots(figsize=(10, 8))
@@ -159,5 +158,5 @@ if df is not None:
             ax.set_title(f'Distribusi {col}')
             st.pyplot(fig)
 
-        st.subheader("Data Mentah yang Sudah Dibersihkan")
+        st.subheader("Data yang Digunakan untuk Melatih Model (Sudah Dibersihkan)")
         st.dataframe(df)
